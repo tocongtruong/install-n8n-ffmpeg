@@ -175,7 +175,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: n8n-ffmpeg-latest
+    image: n8nio/n8n:latest
     restart: always
     ports:
       - "5678:5678"
@@ -193,6 +193,11 @@ services:
       - N8N_DEFAULT_BINARY_DATA_TEMP_DIRECTORY=/files/temp
       - NODE_FUNCTION_ALLOW_BUILTIN=child_process,path,fs,util
       - N8N_EXECUTIONS_DATA_MAX_SIZE=304857600
+      # Cấu hình Puppeteer
+      - PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
+      # Cấu hình MCP
+      - N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE=true
     volumes:
       - ${N8N_DIR}:/home/node/.n8n
       - ${N8N_DIR}/files:/files
