@@ -2,7 +2,7 @@
 
 # Hiển thị banner
 echo "======================================================================"
-echo "     Script cài đặt N8N với FFmpeg và SSL tự động                     "
+echo "     Script cài đặt N8N và SSL tự động                     "
 echo "======================================================================"
 
 # Kiểm tra xem script có được chạy với quyền root không
@@ -383,5 +383,4 @@ echo "  - Log cập nhật được lưu tại $N8N_DIR/update.log"
 echo "  - Tự động sao lưu trước khi cập nhật"
 echo ""
 echo "Lưu ý: Có thể mất vài phút để SSL được cấu hình hoàn tất."
-echo "Script được chỉnh sửa từ script gốc của Nguyễn Ngọc Thiện, https://www.youtube.com/@EtoolsAICONTENT"
 echo "======================================================================"
