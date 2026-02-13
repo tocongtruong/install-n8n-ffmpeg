@@ -2,12 +2,12 @@
 
 # Hiển thị banner
 echo "======================================================================"
-echo "     Script cài đặt N8N và SSL tự động                     "
+echo "     Script cài đặt N8N v2.0 + SSL tự động + FFmpeg"
 echo "======================================================================"
 
 # Kiểm tra xem script có được chạy với quyền root không
 if [[ $EUID -ne 0 ]]; then
-   echo "Script này cần được chạy với quyền root" 
+   echo "Script này cần được chạy với quyền root"
    exit 1
 fi
 
@@ -52,9 +52,9 @@ check_domain() {
     local domain_ip=$(dig +short $domain)
 
     if [ "$domain_ip" = "$server_ip" ]; then
-        return 0  # Domain đã trỏ đúng
+        return 0
     else
-        return 1  # Domain chưa trỏ đúng
+        return 1
     fi
 }
 
@@ -65,6 +65,11 @@ check_commands() {
         apt-get update
         apt-get install -y dnsutils
     fi
+    if ! command -v curl &> /dev/null; then
+        echo "Cài đặt curl..."
+        apt-get update
+        apt-get install -y curl
+    fi
 }
 
 # Hàm cài đặt Docker
@@ -73,21 +78,23 @@ install_docker() {
         echo "Bỏ qua cài đặt Docker theo yêu cầu..."
         return
     fi
-    
+
     echo "Cài đặt Docker và Docker Compose..."
     apt-get update
     apt-get install -y apt-transport-https ca-certificates curl software-properties-common
-    
-    # Thêm khóa Docker GPG
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
-    
+
+    # Thêm khóa Docker GPG (cách mới, không dùng apt-key deprecated)
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+
     # Thêm repository Docker
-    add-apt-repository -y "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
-    
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
     # Cài đặt Docker
     apt-get update
     apt-get install -y docker-ce docker-ce-cli containerd.io
-    
+
     # Cài đặt Docker Compose
     if ! command -v docker-compose &> /dev/null && ! command -v docker &> /dev/null; then
         echo "Cài đặt Docker Compose..."
@@ -96,8 +103,8 @@ install_docker() {
         echo "Cài đặt Docker Compose plugin..."
         apt-get install -y docker-compose-plugin
     fi
-    
-    # Kiểm tra Docker đã cài đặt thành công chưa
+
+    # Kiểm tra Docker
     if ! command -v docker &> /dev/null; then
         echo "Lỗi: Docker chưa được cài đặt đúng cách."
         exit 1
@@ -109,6 +116,17 @@ install_docker() {
     fi
 
     echo "Docker và Docker Compose đã được cài đặt thành công."
+}
+
+# Xác định docker compose command
+get_docker_compose_cmd() {
+    if command -v docker-compose &> /dev/null; then
+        echo "docker-compose"
+    elif command -v docker &> /dev/null && docker compose version &> /dev/null; then
+        echo "docker compose"
+    else
+        echo ""
+    fi
 }
 
 # Cài đặt các gói cần thiết
@@ -128,7 +146,7 @@ read -p "Nhập tên miền hoặc tên miền phụ của bạn: " DOMAIN
 
 # Kiểm tra domain
 echo "Kiểm tra domain $DOMAIN..."
-if check_domain $DOMAIN; then
+if check_domain "$DOMAIN"; then
     echo "Domain $DOMAIN đã được trỏ đúng đến server này. Tiếp tục cài đặt"
 else
     echo "Domain $DOMAIN chưa được trỏ đến server này."
@@ -142,86 +160,139 @@ install_docker
 
 # Tạo thư mục cho n8n
 echo "Tạo cấu trúc thư mục cho n8n tại $N8N_DIR..."
-mkdir -p $N8N_DIR
-mkdir -p $N8N_DIR/files
-mkdir -p $N8N_DIR/files/temp
+mkdir -p "$N8N_DIR"
+mkdir -p "$N8N_DIR/files"
+mkdir -p "$N8N_DIR/files/temp"
+mkdir -p "$N8N_DIR/my-files"
 
+# ====================================================================
 # Tạo Dockerfile
-echo "Tạo Dockerfile để cài đặt n8n với FFmpeg..."
+# ====================================================================
+echo "Tạo Dockerfile tối ưu (multi-stage build)..."
 cat << 'EOF' > $N8N_DIR/Dockerfile
+# ==============================
+# Stage 1: Lấy FFmpeg static binary
+# ==============================
+FROM mwader/static-ffmpeg:7.1 AS ffmpeg_source
+
+# ==============================
+# Stage 2: Build n8n custom
+# ==============================
 FROM n8nio/n8n:latest
 
 USER root
 
-# Cài đặt FFmpeg, wget và zip
-RUN apk update && \
-    apk add --no-cache ffmpeg wget zip unzip
+# ==============================
+# 1. Copy FFmpeg + FFprobe từ stage 1
+# ==============================
+COPY --from=ffmpeg_source /ffmpeg /usr/local/bin/ffmpeg
+COPY --from=ffmpeg_source /ffprobe /usr/local/bin/ffprobe
+RUN chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 
-# Kiểm tra cài đặt các công cụ
-RUN ffmpeg -version && \
-    wget --version | head -n 1 && \
-    zip --version | head -n 2
+# ==============================
+# 2. Tạo thư mục cho file access
+# ==============================
+RUN mkdir -p /files/temp /home/my-files && \
+    chown -R 1000:1000 /files /home/my-files /home/node
 
-# Trở lại user node
+# ==============================
+# 3. Verify installations
+# ==============================
+RUN echo "=== Verifying ===" && \
+    ffmpeg -version | head -n 1 && \
+    ffprobe -version | head -n 1 && \
+    echo "=== All OK ==="
+
 USER node
 EOF
 
+# ====================================================================
 # Tạo file docker-compose.yml
-echo "Tạo file docker-compose.yml..."
+# ====================================================================
+echo "Tạo file docker-compose.yml tối ưu..."
 cat << EOF > $N8N_DIR/docker-compose.yml
-version: "3"
 services:
   n8n:
     build:
       context: .
       dockerfile: Dockerfile
-    image: n8nio/n8n:latest
+    container_name: n8n
     restart: always
     ports:
       - "5678:5678"
     environment:
+      # === Cấu hình cơ bản ===
       - N8N_HOST=${DOMAIN}
       - N8N_PORT=5678
       - N8N_PROTOCOL=https
       - NODE_ENV=production
       - WEBHOOK_URL=https://${DOMAIN}
       - GENERIC_TIMEZONE=Asia/Ho_Chi_Minh
-      # Cấu hình binary data mode
+
+      # === Binary Data ===
       - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
-      - N8N_BINARY_DATA_STORAGE=/files
-      - N8N_DEFAULT_BINARY_DATA_FILESYSTEM_DIRECTORY=/files
-      - N8N_DEFAULT_BINARY_DATA_TEMP_DIRECTORY=/files/temp
+      - N8N_BINARY_DATA_TTL=168
+
+      # === File Access & Command Execution ===
+      - N8N_RESTRICT_FILE_ACCESS_TO=/home/node;/home/my-files;/files
+      - NODES_EXCLUDE=[]
       - NODE_FUNCTION_ALLOW_BUILTIN=child_process,path,fs,util
+      - NODE_FUNCTION_ALLOW_EXTERNAL=*
+
+      # === Execution tuning ===
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=168
+      - EXECUTIONS_DATA_PRUNE_MAX_COUNT=5000
       - N8N_EXECUTIONS_DATA_MAX_SIZE=304857600
-      # Cấu hình Puppeteer
+
+      # === Security ===
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_HIRING_BANNER_ENABLED=false
+
+      # === Puppeteer / Chromium ===
       - PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
-      # Cấu hình MCP
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+      # === MCP / Community ===
       - N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE=true
+
     volumes:
       - ${N8N_DIR}:/home/node/.n8n
       - ${N8N_DIR}/files:/files
+      - ${N8N_DIR}/my-files:/home/my-files
     user: "1000:1000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   caddy:
     image: caddy:2
+    container_name: caddy
     restart: always
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ${N8N_DIR}/Caddyfile:/etc/caddy/Caddyfile
+      - ${N8N_DIR}/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - n8n
+      n8n:
+        condition: service_healthy
 
 volumes:
   caddy_data:
+    driver: local
   caddy_config:
+    driver: local
 EOF
 
+# ====================================================================
 # Tạo file Caddyfile
+# ====================================================================
 echo "Tạo file Caddyfile..."
 cat << EOF > $N8N_DIR/Caddyfile
 ${DOMAIN} {
@@ -229,89 +300,95 @@ ${DOMAIN} {
 }
 EOF
 
+# ====================================================================
 # Đặt quyền cho thư mục n8n
+# ====================================================================
 echo "Đặt quyền cho thư mục n8n..."
-chown -R 1000:1000 $N8N_DIR
-chmod -R 755 $N8N_DIR
+chown -R 1000:1000 "$N8N_DIR"
+chmod -R 755 "$N8N_DIR"
 
+# ====================================================================
 # Khởi động các container
+# ====================================================================
 echo "Khởi động các container..."
-echo "Lưu ý: Quá trình build image có thể mất vài phút, vui lòng đợi..."
+echo "Lưu ý: Quá trình build image có thể mất vài phút (tải FFmpeg static binary)..."
 cd $N8N_DIR
 
-# Sử dụng docker-compose hoặc docker compose tùy theo phiên bản
-if command -v docker-compose &> /dev/null; then
-    docker-compose up -d
-elif command -v docker &> /dev/null && docker compose version &> /dev/null; then
-    docker compose up -d
-else
+DOCKER_COMPOSE_CMD=$(get_docker_compose_cmd)
+if [ -z "$DOCKER_COMPOSE_CMD" ]; then
     echo "Lỗi: Không tìm thấy lệnh docker-compose hoặc docker compose."
     exit 1
 fi
 
-# Đợi một lúc để các container có thể khởi động
+$DOCKER_COMPOSE_CMD build --no-cache
+$DOCKER_COMPOSE_CMD up -d
+
+# Đợi container khởi động
 echo "Đợi các container khởi động..."
-sleep 15
-
-# Kiểm tra các container đã chạy chưa
-echo "Kiểm tra các container đã chạy chưa..."
-if docker ps | grep -q "n8n-ffmpeg-latest" || docker ps | grep -q "n8n"; then
-    echo "Container n8n đã chạy thành công."
-else
-    echo "Container n8n đang được khởi động, có thể mất thêm thời gian..."
-    echo "Bạn có thể kiểm tra logs bằng lệnh:"
-    if command -v docker-compose &> /dev/null; then
-        echo "  docker-compose logs -f"
-    else
-        echo "  docker compose logs -f"
+echo "Đang chờ n8n healthy (có thể mất 30-60 giây)..."
+WAIT_COUNT=0
+MAX_WAIT=60
+while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+    if docker inspect --format='{{.State.Health.Status}}' n8n 2>/dev/null | grep -q "healthy"; then
+        echo "✓ Container n8n đã healthy!"
+        break
     fi
+    sleep 5
+    WAIT_COUNT=$((WAIT_COUNT + 5))
+    echo "  Đang chờ... (${WAIT_COUNT}s/${MAX_WAIT}s)"
+done
+
+if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
+    echo "⚠ n8n chưa healthy sau ${MAX_WAIT}s. Kiểm tra logs:"
+    echo "  $DOCKER_COMPOSE_CMD logs n8n"
 fi
 
-if docker ps | grep -q "caddy:2"; then
-    echo "Container caddy đã chạy thành công."
+# Kiểm tra containers
+echo ""
+echo "Kiểm tra trạng thái containers..."
+if docker ps | grep -q "n8n"; then
+    echo "✓ Container n8n đang chạy."
 else
-    echo "Container caddy đang được khởi động, có thể mất thêm thời gian..."
-    echo "Bạn có thể kiểm tra logs bằng lệnh:"
-    if command -v docker-compose &> /dev/null; then
-        echo "  docker-compose logs -f"
-    else
-        echo "  docker compose logs -f"
-    fi
+    echo "✗ Container n8n chưa chạy. Kiểm tra: $DOCKER_COMPOSE_CMD logs n8n"
 fi
 
-# Kiểm tra FFmpeg trong container n8n (nếu container đã chạy)
-echo "Kiểm tra FFmpeg trong container n8n..."
+if docker ps | grep -q "caddy"; then
+    echo "✓ Container caddy đang chạy."
+else
+    echo "✗ Container caddy chưa chạy. Kiểm tra: $DOCKER_COMPOSE_CMD logs caddy"
+fi
+
+# Kiểm tra tools trong container n8n
+echo ""
+echo "Kiểm tra tools trong container n8n..."
 N8N_CONTAINER=$(docker ps -q --filter "name=n8n" 2>/dev/null)
 if [ -n "$N8N_CONTAINER" ]; then
-    if docker exec $N8N_CONTAINER ffmpeg -version &> /dev/null; then
-        echo "FFmpeg đã được cài đặt thành công trong container n8n."
-        echo "Phiên bản FFmpeg:"
-        docker exec $N8N_CONTAINER ffmpeg -version | head -n 1
-    else
-        echo "Lưu ý: FFmpeg có thể chưa được cài đặt đúng cách trong container."
-        echo "Bạn có thể kiểm tra thủ công sau với lệnh: docker exec \$(docker ps -q --filter \"name=n8n\") ffmpeg -version"
-    fi
+    echo "--- FFmpeg ---"
+    docker exec $N8N_CONTAINER ffmpeg -version 2>/dev/null | head -n 1 || echo "✗ FFmpeg chưa sẵn sàng"
+    echo "--- Bash ---"
+    docker exec $N8N_CONTAINER bash --version 2>/dev/null | head -n 1 || echo "✗ Bash chưa sẵn sàng"
 else
-    echo "Lưu ý: Không thể kiểm tra FFmpeg ngay lúc này. Container n8n chưa sẵn sàng."
-    echo "Bạn có thể kiểm tra thủ công sau với lệnh: docker exec \$(docker ps -q --filter \"name=n8n\") ffmpeg -version"
+    echo "Container n8n chưa sẵn sàng để kiểm tra tools."
+    echo "Kiểm tra thủ công: docker exec n8n ffmpeg -version"
 fi
 
-# Tạo script kiểm tra cập nhật tự động
+# ====================================================================
+# Tạo script cập nhật tự động
+# ====================================================================
+echo ""
 echo "Tạo script cập nhật tự động..."
-cat << EOF > $N8N_DIR/update-n8n.sh
+cat << 'UPDATEEOF' > $N8N_DIR/update-n8n.sh
 #!/bin/bash
 
 # Đường dẫn đến thư mục n8n
-N8N_DIR="$N8N_DIR"
+N8N_DIR="PLACEHOLDER_N8N_DIR"
 
 # Hàm ghi log
 log() {
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] \$1" >> \$N8N_DIR/update.log
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> $N8N_DIR/update.log
 }
 
-log "Bắt đầu kiểm tra cập nhật..."
-
-# Kiểm tra Docker command
+# Xác định docker compose command
 if command -v docker-compose &> /dev/null; then
     DOCKER_COMPOSE="docker-compose"
 elif command -v docker &> /dev/null && docker compose version &> /dev/null; then
@@ -321,66 +398,177 @@ else
     exit 1
 fi
 
-# Lấy phiên bản hiện tại
-CURRENT_IMAGE_ID=\$(docker images -q n8n-ffmpeg-latest)
-if [ -z "\$CURRENT_IMAGE_ID" ]; then
-    log "Không tìm thấy image n8n-ffmpeg-latest"
-    exit 1
-fi
+log "Bắt đầu kiểm tra cập nhật..."
 
-# Kiểm tra và xóa image gốc n8nio/n8n cũ nếu cần
-OLD_BASE_IMAGE_ID=\$(docker images -q n8nio/n8n)
+# Lấy image ID hiện tại của n8nio/n8n
+OLD_BASE_IMAGE_ID=$(docker images -q n8nio/n8n:latest)
 
 # Pull image gốc mới nhất
-log "Kéo image n8nio/n8n mới nhất"
-docker pull n8nio/n8n
+log "Kéo image n8nio/n8n:latest mới nhất..."
+docker pull n8nio/n8n:latest
 
 # Lấy image ID mới
-NEW_BASE_IMAGE_ID=\$(docker images -q n8nio/n8n)
+NEW_BASE_IMAGE_ID=$(docker images -q n8nio/n8n:latest)
 
-# Kiểm tra xem image gốc đã thay đổi chưa
-if [ "\$NEW_BASE_IMAGE_ID" != "\$OLD_BASE_IMAGE_ID" ]; then
-    log "Phát hiện image mới (\${NEW_BASE_IMAGE_ID}), tiến hành cập nhật..."
-    
+# So sánh image cũ và mới
+if [ "$NEW_BASE_IMAGE_ID" != "$OLD_BASE_IMAGE_ID" ]; then
+    log "Phát hiện image mới (${NEW_BASE_IMAGE_ID}), tiến hành cập nhật..."
+
     # Sao lưu dữ liệu n8n
-    BACKUP_DATE=\$(date '+%Y%m%d_%H%M%S')
-    BACKUP_FILE="\$N8N_DIR/backup_\${BACKUP_DATE}.zip"
-    log "Tạo bản sao lưu tại \$BACKUP_FILE"
-    zip -r \$BACKUP_FILE \$N8N_DIR -x \$N8N_DIR/update-n8n.sh -x \$N8N_DIR/backup_* -x \$N8N_DIR/files/temp/* -x \$N8N_DIR/Dockerfile -x \$N8N_DIR/docker-compose.yml
-    
-    # Build lại image n8n-ffmpeg
-    cd \$N8N_DIR
-    log "Đang build lại image n8n-ffmpeg-latest..."
-    \$DOCKER_COMPOSE build
-    
+    BACKUP_DATE=$(date '+%Y%m%d_%H%M%S')
+    BACKUP_FILE="$N8N_DIR/backup_${BACKUP_DATE}.zip"
+    log "Tạo bản sao lưu tại $BACKUP_FILE"
+    zip -r "$BACKUP_FILE" "$N8N_DIR" \
+        -x "$N8N_DIR/update-n8n.sh" \
+        -x "$N8N_DIR/backup_*" \
+        -x "$N8N_DIR/files/temp/*" \
+        -x "$N8N_DIR/Dockerfile" \
+        -x "$N8N_DIR/docker-compose.yml"
+
+    # Xóa backup cũ hơn 7 ngày
+    find "$N8N_DIR" -name "backup_*.zip" -mtime +7 -delete
+    log "Đã xóa các backup cũ hơn 7 ngày"
+
+    # Build lại image
+    cd "$N8N_DIR"
+    log "Đang build lại image..."
+    $DOCKER_COMPOSE build --no-cache
+
     # Khởi động lại container
     log "Khởi động lại container..."
-    \$DOCKER_COMPOSE down
-    \$DOCKER_COMPOSE up -d
-    
-    log "Cập nhật hoàn tất, phiên bản mới: \${NEW_BASE_IMAGE_ID}"
+    $DOCKER_COMPOSE down
+    $DOCKER_COMPOSE up -d
+
+    # Chờ healthy
+    WAIT_COUNT=0
+    MAX_WAIT=60
+    while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+        if docker inspect --format='{{.State.Health.Status}}' n8n 2>/dev/null | grep -q "healthy"; then
+            log "Container n8n đã healthy sau cập nhật!"
+            break
+        fi
+        sleep 5
+        WAIT_COUNT=$((WAIT_COUNT + 5))
+    done
+
+    if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
+        log "CẢNH BÁO: n8n chưa healthy sau ${MAX_WAIT}s"
+    fi
+
+    # Dọn dẹp image cũ không dùng
+    docker image prune -f
+    log "Cập nhật hoàn tất, image mới: ${NEW_BASE_IMAGE_ID}"
 else
     log "Không có cập nhật mới cho n8n"
 fi
-EOF
+UPDATEEOF
+
+# Thay thế placeholder bằng đường dẫn thực tế
+sed -i "s|PLACEHOLDER_N8N_DIR|$N8N_DIR|g" $N8N_DIR/update-n8n.sh
 
 # Đặt quyền thực thi cho script cập nhật
 chmod +x $N8N_DIR/update-n8n.sh
 
-# Tạo cron job để chạy mỗi 12 giờ
+# ====================================================================
+# Tạo script backup thủ công
+# ====================================================================
+echo "Tạo script backup thủ công..."
+cat << 'BACKUPEOF' > $N8N_DIR/backup-n8n.sh
+#!/bin/bash
+
+N8N_DIR="PLACEHOLDER_N8N_DIR"
+BACKUP_DATE=$(date '+%Y%m%d_%H%M%S')
+BACKUP_FILE="$N8N_DIR/backup_${BACKUP_DATE}.zip"
+
+echo "Đang tạo backup..."
+zip -r "$BACKUP_FILE" "$N8N_DIR" \
+    -x "$N8N_DIR/update-n8n.sh" \
+    -x "$N8N_DIR/backup-n8n.sh" \
+    -x "$N8N_DIR/backup_*" \
+    -x "$N8N_DIR/files/temp/*" \
+    -x "$N8N_DIR/Dockerfile" \
+    -x "$N8N_DIR/docker-compose.yml" \
+    -x "$N8N_DIR/update.log"
+
+echo "✓ Backup hoàn tất: $BACKUP_FILE"
+echo "  Kích thước: $(du -h "$BACKUP_FILE" | cut -f1)"
+BACKUPEOF
+
+sed -i "s|PLACEHOLDER_N8N_DIR|$N8N_DIR|g" $N8N_DIR/backup-n8n.sh
+chmod +x $N8N_DIR/backup-n8n.sh
+
+# ====================================================================
+# Tạo script restart nhanh
+# ====================================================================
+echo "Tạo script restart nhanh..."
+cat << 'RESTARTEOF' > $N8N_DIR/restart-n8n.sh
+#!/bin/bash
+
+N8N_DIR="PLACEHOLDER_N8N_DIR"
+cd "$N8N_DIR"
+
+if command -v docker-compose &> /dev/null; then
+    DOCKER_COMPOSE="docker-compose"
+else
+    DOCKER_COMPOSE="docker compose"
+fi
+
+echo "Đang restart n8n..."
+$DOCKER_COMPOSE restart n8n
+
+echo "Đợi n8n healthy..."
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt 60 ]; do
+    if docker inspect --format='{{.State.Health.Status}}' n8n 2>/dev/null | grep -q "healthy"; then
+        echo "✓ n8n đã healthy!"
+        exit 0
+    fi
+    sleep 5
+    WAIT_COUNT=$((WAIT_COUNT + 5))
+    echo "  Đang chờ... (${WAIT_COUNT}s)"
+done
+
+echo "⚠ n8n chưa healthy. Kiểm tra: $DOCKER_COMPOSE logs n8n"
+RESTARTEOF
+
+sed -i "s|PLACEHOLDER_N8N_DIR|$N8N_DIR|g" $N8N_DIR/restart-n8n.sh
+chmod +x $N8N_DIR/restart-n8n.sh
+
+# ====================================================================
+# Tạo cron job cập nhật tự động mỗi 12 giờ
+# ====================================================================
 echo "Tạo cron job cập nhật tự động mỗi 12 giờ..."
 CRON_JOB="0 */12 * * * $N8N_DIR/update-n8n.sh"
 (crontab -l 2>/dev/null | grep -v "update-n8n.sh"; echo "$CRON_JOB") | crontab -
 
+# ====================================================================
+# Hoàn tất
+# ====================================================================
+echo ""
 echo "======================================================================"
-echo "N8n đã được cài đặt và cấu hình với FFmpeg, wget, zip và SSL sử dụng Caddy."
-echo "Truy cập https://${DOMAIN} để sử dụng."
-echo "Các file cấu hình và dữ liệu được lưu trong $N8N_DIR"
+echo "  ✓ N8N đã được cài đặt và cấu hình thành công!                     "
+echo "======================================================================"
 echo ""
-echo "► Tính năng tự động cập nhật đã được thiết lập:"
-echo "  - Kiểm tra cập nhật mỗi 12 giờ"
-echo "  - Log cập nhật được lưu tại $N8N_DIR/update.log"
-echo "  - Tự động sao lưu trước khi cập nhật"
+echo "  🌐 Truy cập: https://${DOMAIN}"
+echo "  📁 Thư mục dữ liệu: $N8N_DIR"
+echo "  📁 Thư mục files: $N8N_DIR/files"
+echo "  📁 Thư mục my-files: $N8N_DIR/my-files"
 echo ""
-echo "Lưu ý: Có thể mất vài phút để SSL được cấu hình hoàn tất."
+echo "  📦 Tools đã cài: FFmpeg, FFprobe"
+echo ""
+echo "  🔧 Scripts tiện ích:"
+echo "    - Cập nhật:  $N8N_DIR/update-n8n.sh"
+echo "    - Backup:    $N8N_DIR/backup-n8n.sh"
+echo "    - Restart:   $N8N_DIR/restart-n8n.sh"
+echo ""
+echo "  ⏰ Tự động cập nhật: mỗi 12 giờ"
+echo "  📋 Log cập nhật: $N8N_DIR/update.log"
+echo ""
+echo "  📝 Lệnh hữu ích:"
+echo "    - Xem logs:    cd $N8N_DIR && $DOCKER_COMPOSE_CMD logs -f"
+echo "    - Restart:     $N8N_DIR/restart-n8n.sh"
+echo "    - Backup:      $N8N_DIR/backup-n8n.sh"
+echo "    - Cập nhật:    $N8N_DIR/update-n8n.sh"
+echo ""
+echo "  ⚠️  SSL có thể mất vài phút để cấu hình hoàn tất."
 echo "======================================================================"
