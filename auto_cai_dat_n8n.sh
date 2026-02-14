@@ -234,7 +234,7 @@ services:
       - N8N_BINARY_DATA_TTL=168
 
       # === File Access & Command Execution ===
-      - N8N_RESTRICT_FILE_ACCESS_TO=/home/node;/home/my-files;/files
+      - N8N_RESTRICT_FILE_ACCESS_TO=/home/node;/home/my-files;/files;/tmp
       - NODES_EXCLUDE=[]
       - NODE_FUNCTION_ALLOW_BUILTIN=child_process,path,fs,util
       - NODE_FUNCTION_ALLOW_EXTERNAL=*
@@ -572,3 +572,4 @@ echo "    - Cập nhật:    $N8N_DIR/update-n8n.sh"
 echo ""
 echo "  ⚠️  SSL có thể mất vài phút để cấu hình hoàn tất."
 echo "======================================================================"
+
