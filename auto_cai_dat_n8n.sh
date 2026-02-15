@@ -261,6 +261,8 @@ services:
       - ${N8N_DIR}/files:/files
       - ${N8N_DIR}/my-files:/home/my-files
     user: "1000:1000"
+    networks:
+      - n8n_network
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
       interval: 30s
@@ -279,6 +281,8 @@ services:
       - ${N8N_DIR}/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    networks:
+      - n8n_network
     depends_on:
       n8n:
         condition: service_healthy
@@ -288,6 +292,11 @@ volumes:
     driver: local
   caddy_config:
     driver: local
+
+networks:
+  n8n_network:
+    name: n8n_network
+    driver: bridge
 EOF
 
 # ====================================================================
@@ -572,4 +581,5 @@ echo "    - Cập nhật:    $N8N_DIR/update-n8n.sh"
 echo ""
 echo "  ⚠️  SSL có thể mất vài phút để cấu hình hoàn tất."
 echo "======================================================================"
+
 
