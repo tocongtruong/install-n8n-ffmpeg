@@ -21,6 +21,12 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
+# Kiểm tra network n8n_network đã tồn tại chưa
+if ! docker network ls | grep -q "n8n_network"; then
+    echo "Lỗi: Network 'n8n_network' chưa tồn tại. Hãy cài n8n trước (install_n8n.sh)."
+    exit 1
+fi
+
 # ====================================================================
 # Cấu hình
 # ====================================================================
@@ -62,14 +68,13 @@ services:
       resources:
         limits:
           memory: ${MEMORY_LIMIT}
-    # Nếu n8n chạy trên cùng server, kết nối qua Docker network
+    # Kết nối vào cùng network với n8n
     networks:
-      - browserless_net
+      - n8n_network
 
 networks:
-  browserless_net:
-    name: browserless_net
-    driver: bridge
+  n8n_network:
+    external: true
 EOF
 
 # ====================================================================
@@ -95,17 +100,13 @@ fi
 SERVER_IP=$(curl -s https://api.ipify.org 2>/dev/null || echo "YOUR_SERVER_IP")
 
 # ====================================================================
-# Kết nối n8n container vào cùng network (nếu n8n đã chạy)
+# Kiểm tra kết nối với n8n
 # ====================================================================
 echo ""
-echo "Kết nối n8n vào Browserless network..."
 if docker ps | grep -q "n8n"; then
-    docker network connect browserless_net n8n 2>/dev/null && \
-        echo "✓ Đã kết nối container n8n vào browserless_net" || \
-        echo "⚠ Container n8n đã ở trong network này rồi"
+    echo "✓ Container n8n đang chạy - cả 2 đều ở trong n8n_network"
 else
-    echo "⚠ Container n8n chưa chạy. Kết nối sau bằng lệnh:"
-    echo "  docker network connect browserless_net n8n"
+    echo "⚠ Container n8n chưa chạy. Browserless sẽ sẵn sàng khi n8n khởi động."
 fi
 
 # ====================================================================
