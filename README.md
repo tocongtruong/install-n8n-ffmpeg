@@ -13,6 +13,12 @@ cd /tmp && curl -sSL https://raw.githubusercontent.com/tocongtruong/install-n8n-
 cd /tmp && curl -sSL https://raw.githubusercontent.com/tocongtruong/install-n8n-ffmpeg/refs/heads/main/install_browserless.sh | tr -d '\r' > install_browserless.sh && chmod +x install_browserless.sh && sudo bash install_browserless.sh
 ```
 
+## 3. Cài đặt N8N + SSL + FFmpeg + Swap 2G Ram
+
+```bash
+cd /tmp && curl -sSL https://raw.githubusercontent.com/tocongtruong/install-n8n-ffmpeg/refs/heads/main/n8n_swap.sh | tr -d '\r' > install_n8n.sh && chmod +x install_n8n.sh && sudo bash install_n8n.sh
+```
+
 **Bao gồm:**
 - Browserless Chromium (đầy đủ thư viện)
 - Tự động kết nối Docker network với n8n
@@ -79,3 +85,6 @@ cd /home/browserless && docker compose down
 # Health check
 curl http://localhost:3000/json/version
 ```
+
+
+
