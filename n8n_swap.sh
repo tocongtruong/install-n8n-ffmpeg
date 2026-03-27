@@ -237,6 +237,12 @@ USER node
 EOF
 
 # ====================================================================
+# Sinh N8N_ENCRYPTION_KEY ngẫu nhiên
+# ====================================================================
+N8N_KEY=$(openssl rand -hex 16)
+echo "✓ Đã tạo N8N_ENCRYPTION_KEY"
+
+# ====================================================================
 # Tạo file docker-compose.yml
 # ====================================================================
 echo "Tạo file docker-compose.yml tối ưu..."
@@ -276,6 +282,7 @@ services:
       - N8N_EXECUTIONS_DATA_MAX_SIZE=304857600
 
       # === Security ===
+      - N8N_ENCRYPTION_KEY=${N8N_KEY}
       - N8N_DIAGNOSTICS_ENABLED=false
       - N8N_HIRING_BANNER_ENABLED=false
 
@@ -610,4 +617,7 @@ echo "    - Backup:      $N8N_DIR/backup-n8n.sh"
 echo "    - Cập nhật:    $N8N_DIR/update-n8n.sh"
 echo ""
 echo "  ⚠️  SSL có thể mất vài phút để cấu hình hoàn tất."
+echo ""
+echo "  🔑 N8N_ENCRYPTION_KEY: ${N8N_KEY}"
+echo "     (Lưu lại key này! Cần dùng nếu restore backup)"
 echo "======================================================================"
